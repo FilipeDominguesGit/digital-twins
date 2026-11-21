@@ -14,7 +14,7 @@ It is product-agnostic. The concrete failure cases a product must survive belong
 `POST /v1/messages`
 
 ```json
-{ "to": "+351910000001", "from": "VetClinic", "body": "Hello" }
+{ "to": "+351910000001", "from": "ExampleCo", "body": "Hello" }
 ```
 
 | Header | |
@@ -59,7 +59,7 @@ Fault rules (below) are applied before the idempotency check.
 A message:
 
 ```json
-{ "id": "sms_…", "to": "+351910000001", "from": "VetClinic", "body": "Hello",
+{ "id": "sms_…", "to": "+351910000001", "from": "ExampleCo", "body": "Hello",
   "encoding": "GSM-7", "segments": 1, "receivedAt": "2026-11-21T18:00:00.123+00:00", "idempotencyKey": "abc" }
 ```
 
