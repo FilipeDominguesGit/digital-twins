@@ -1,0 +1,77 @@
+# SMS twin: build the image and run its self-test on every change;
+# publish ghcr.io/filipedominguesgit/sms-twin:<version> when a tag sms-v<version> is pushed.
+name: sms
+
+on:
+  push:
+    branches: [main]
+    paths: ['sms/**', '.github/workflows/sms.yml']
+    tags: ['sms-v*']
+  pull_request:
+    paths: ['sms/**', '.github/workflows/sms.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/filipedominguesgit/sms-twin
+  API_KEY: ci-key   # synthetic, for the self-test only
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build the image
+        env:
+          SOURCE: https://github.com/${{ github.repository }}
+        run: docker build --label "org.opencontainers.image.source=$SOURCE" -t sms-twin:ci sms
+
+      - name: Start the twin
+        run: |
+          docker run -d --name sms-twin -e TWIN_API_KEY="$API_KEY" -p 8090:8080 sms-twin:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8090/health && exit 0
+            sleep 1
+          done
+          docker logs sms-twin
+          exit 1
+
+      - name: Self-test
+        run: dotnet run sms/selftest.cs -- http://localhost:8090 "$API_KEY"
+
+      - name: Publish (tags only)
+        if: startsWith(github.ref, 'refs/tags/sms-v')
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#sms-v}"
+          TWIN_VERSION="$(curl -fsS http://localhost:8090/health | jq -r .version)"
+          if [ "$VERSION" != "$TWIN_VERSION" ]; then
+            echo "Tag $TAG does not match the twin's version $TWIN_VERSION (app.cs)."
+            exit 1
+          fi
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          if docker manifest inspect "$IMAGE:$VERSION" > /dev/null 2>&1; then
+            echo "$IMAGE:$VERSION already exists; versions are never overwritten."
+            exit 1
+          fi
+          docker tag sms-twin:ci "$IMAGE:$VERSION"
+          docker push "$IMAGE:$VERSION"
+          echo "Published $IMAGE:$VERSION"
+
+      - name: Stop the twin
+        if: always()
+        run: docker rm -f sms-twin || true
