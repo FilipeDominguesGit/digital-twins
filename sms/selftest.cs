@@ -168,6 +168,48 @@ Check("error default status 503", (await Send(Msg("x"))).Status == HttpStatusCod
 Check("rules apply in creation order", (await Send(Msg("x"))).Status == HttpStatusCode.TooManyRequests);
 await Reset();
 
+// Faults: bodyContains (0.3.0)
+async Task<JsonArray> Faults() => (await http.GetFromJsonAsync<JsonArray>("twin/faults"))!;
+Check("fault: empty bodyContains is 400", await AddFault(new { action = "error", bodyContains = "", times = 1 }) == HttpStatusCode.BadRequest);
+Check("fault: number bodyContains is 400", await AddFault(new { action = "error", bodyContains = 5, times = 1 }) == HttpStatusCode.BadRequest);
+Check("fault: boolean bodyContains is 400", await AddFault(new { action = "error", bodyContains = true, times = 1 }) == HttpStatusCode.BadRequest);
+Check("fault: array bodyContains is 400", await AddFault(new { action = "error", bodyContains = new[] { "Alpha" }, times = 1 }) == HttpStatusCode.BadRequest);
+Check("fault: no rules after rejected bodyContains", (await Faults()).Count == 0);
+
+var created = await http.PostAsJsonAsync("twin/faults", new { action = "error", status = 429, bodyContains = "Alpha notice", times = 1 });
+var createdRule = JsonNode.Parse(await created.Content.ReadAsStringAsync());
+Check("fault with bodyContains: 201 shows it", created.StatusCode == HttpStatusCode.Created && S(createdRule, "bodyContains") == "Alpha notice"
+    && S(createdRule, "id").StartsWith("fault_"), createdRule?.ToJsonString() ?? "");
+await AddFault(new { action = "error", status = 503, times = 1 });
+var listed = await Faults();
+Check("GET faults: bodyContains, and null when not given", listed.Count == 2 && S(listed[0], "bodyContains") == "Alpha notice"
+    && listed[1]!.AsObject().ContainsKey("bodyContains") && listed[1]!["bodyContains"] is null, listed.ToJsonString());
+Check("bodyContains: send without the text takes the next rule", (await Send(Msg("Beta notice: hello"))).Status == HttpStatusCode.ServiceUnavailable);
+listed = await Faults();
+Check("bodyContains: skipped rule keeps its times", listed.Count == 1 && S(listed[0], "bodyContains") == "Alpha notice" && S(listed[0], "times") == "1",
+    listed.ToJsonString());
+Check("bodyContains: send without the text, no other rule: 202", (await Send(Msg("Beta notice: hello"))).Status == HttpStatusCode.Accepted);
+Check("bodyContains is case-sensitive", (await Send(Msg("alpha notice: hello"))).Status == HttpStatusCode.Accepted);
+Check("bodyContains: send with the text uses the rule", (await Send(Msg("Hi. Alpha notice: hello"))).Status == HttpStatusCode.TooManyRequests);
+Check("bodyContains: rule used up", (await Faults()).Count == 0);
+Check("bodyContains: only the sends without a fault were stored", (await Messages()).Count == 2);
+await Reset();
+
+// Faults: to and bodyContains together
+await AddFault(new { to = B, bodyContains = "Alpha", action = "error", times = 2 });
+Check("to and bodyContains: right text, other number: 202", (await Send(Msg("Alpha", A))).Status == HttpStatusCode.Accepted);
+Check("to and bodyContains: right number, other text: 202", (await Send(Msg("Beta", B))).Status == HttpStatusCode.Accepted);
+Check("to and bodyContains: both match: 503", (await Send(Msg("Alpha", B))).Status == HttpStatusCode.ServiceUnavailable);
+Check("to and bodyContains: one use left", (await Faults()) is [var left] && S(left, "times") == "1");
+await Reset();
+
+// Faults: bodyContains on the same number at the same time picks the right send
+await AddFault(new { to = A, bodyContains = "Beta", action = "accept-then-error", times = 1 });
+Check("same number: the other text is not hit", (await Send(Msg("Alpha reminder"), idempotencyKey: "k-alpha")).Status == HttpStatusCode.Accepted);
+Check("same number: the matching text is hit", (await Send(Msg("Beta request"), idempotencyKey: "k-beta")).Status == HttpStatusCode.InternalServerError);
+Check("same number: both stored once", (await Messages(A)).Count == 2);
+await Reset();
+
 // Faults: delay
 await AddFault(new { action = "delay", delayMs = 1500, times = 1 });
 var clock = Stopwatch.StartNew();

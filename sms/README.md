@@ -4,7 +4,10 @@ A behavioural clone of an SMS provider, for products' tests and previews. A prod
 
 - **Image:** `ghcr.io/filipedominguesgit/sms-twin:<version>`, public. Pin a version; there is no `latest`.
 - **Port:** 8080 in the container.
-- **Version:** 0.2.0, which is also returned by `GET /health`. 0.2.0 adds incoming messages; everything in 0.1.0 is unchanged.
+- **Version:** 0.3.0, which is also returned by `GET /health`. History; each version keeps everything in the one before it:
+  - 0.3.0 adds the optional `bodyContains` filter to fault rules.
+  - 0.2.0 adds incoming messages.
+  - 0.1.0: the send, test and fault APIs.
 - **Configuration:**
   - `TWIN_API_KEY`. When it is set, the send API needs `Authorization: Bearer <key>`. When it is unset or empty, the send API is open.
   - `TWIN_WEBHOOK_URL`: where incoming messages are delivered, an absolute `http` or `https` URL. Optional; an invalid value stops the twin at startup.
@@ -61,7 +64,7 @@ Fault rules (below) are applied before the idempotency check.
 | `POST /twin/inbound/{id}/redeliver` | 200; delivers it again. 404 for an unknown id |
 | `GET /twin/inbound` | 200, every incoming message, in order, with its delivery attempts |
 | `DELETE /twin/inbound` | 204; clears the incoming messages |
-| `GET /health` | 200, `{ "status": "ok", "version": "0.2.0" }` |
+| `GET /health` | 200, `{ "status": "ok", "version": "0.3.0" }` |
 
 A message:
 
@@ -75,7 +78,7 @@ A message:
 ### Fault rules
 
 ```json
-{ "to": "+351910000001", "action": "error", "status": 503, "times": 2 }
+{ "to": "+351910000001", "bodyContains": "Your order", "action": "error", "status": 503, "times": 2 }
 ```
 
 | Field | |
@@ -83,13 +86,15 @@ A message:
 | `action` | `error`, `delay` or `accept-then-error` (required) |
 | `times` | how many send requests the rule applies to, at least 1 (required) |
 | `to` | only send requests to this number (optional; every number when absent) |
+| `bodyContains` | only send requests whose `body` contains this text, a non-empty string (optional, 0.3.0; every body when absent). Ordinal and case-sensitive |
 | `status` | 100 to 599 (optional; for `error` the default is 503, for `accept-then-error` 500) |
 | `delayMs` | 0 to 120000 (required for `delay`) |
 
-A rule that does not follow this table gets **400**.
+A rule that does not follow this table gets **400**. The `201` answer and `GET /twin/faults` show each rule with its `id` and every field above; `to`, `bodyContains`, `status` and `delayMs` are `null` when they were not given.
 
 **How rules apply:**
-- For each send request that passed authentication and validation, the first rule in creation order whose `to` matches is used once. When its `times` reach 0, it is removed.
+- For each send request that passed authentication and validation, the first rule in creation order that matches is used once. When its `times` reach 0, it is removed.
+- A rule matches when its `to` matches (or it has none) **and**, when it has `bodyContains`, the request's `body` contains that text. A rule that does not match is skipped and keeps its `times`, so the next rule in order can match.
 - At most one rule applies per request.
 
 **What each action does:**
@@ -132,7 +137,7 @@ Fault rules apply only to the send API, never to incoming messages.
 ## Running it
 
 ```
-docker run --rm -p 8090:8080 -e TWIN_API_KEY=dev-sms-key ghcr.io/filipedominguesgit/sms-twin:0.2.0
+docker run --rm -p 8090:8080 -e TWIN_API_KEY=dev-sms-key ghcr.io/filipedominguesgit/sms-twin:0.3.0
 ```
 
 Without Docker, with the .NET 10 SDK, from this folder:

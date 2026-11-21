@@ -14,7 +14,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-const string TwinVersion = "0.2.0";
+const string TwinVersion = "0.3.0";
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
@@ -46,7 +46,7 @@ app.MapPost("/v1/messages", async (HttpRequest request) =>
     var key = request.Headers["Idempotency-Key"].ToString();
     var send = new SendRequest(to, from, body, key.Length > 0 ? key : null);
 
-    var fault = state.TakeFault(to);
+    var fault = state.TakeFault(to, body);
     if (fault is { Action: "delay" }) await Task.Delay(fault.DelayMs ?? 0);
     if (fault is { Action: "error" }) return Error(fault.Status ?? 503, "fault injected: error");
 
@@ -71,6 +71,9 @@ app.MapPost("/twin/faults", async (HttpRequest request) =>
     if (action is not ("error" or "delay" or "accept-then-error"))
         return Error(400, "'action' must be 'error', 'delay' or 'accept-then-error'");
     if (payload["to"] is not null && Str(payload, "to") is null) return Error(400, "'to' must be a string");
+    var bodyContains = Str(payload, "bodyContains");
+    if (payload["bodyContains"] is not null && string.IsNullOrEmpty(bodyContains))
+        return Error(400, "'bodyContains' must be a non-empty string");
     var times = Int(payload, "times");
     if (times is null or < 1) return Error(400, "'times' must be a whole number of at least 1");
     var status = Int(payload, "status");
@@ -78,7 +81,7 @@ app.MapPost("/twin/faults", async (HttpRequest request) =>
     var delayMs = Int(payload, "delayMs");
     if (payload["delayMs"] is not null && delayMs is null or < 0 or > 120_000) return Error(400, "'delayMs' must be a whole number from 0 to 120000");
     if (action == "delay" && delayMs is null) return Error(400, "'delay' needs 'delayMs'");
-    var rule = state.AddFault(Str(payload, "to"), action, status, delayMs, times.Value);
+    var rule = state.AddFault(Str(payload, "to"), bodyContains, action, status, delayMs, times.Value);
     return Results.Json(rule, statusCode: 201);
 });
 app.MapGet("/twin/faults", () => Results.Json(state.Faults()));
@@ -213,7 +216,7 @@ sealed class Webhook(Uri? url, byte[]? secret)
     }
 }
 
-record FaultRule(string Id, string? To, string Action, int? Status, int? DelayMs, int Times);
+record FaultRule(string Id, string? To, string? BodyContains, string Action, int? Status, int? DelayMs, int Times);
 
 sealed class TwinState
 {
@@ -275,22 +278,24 @@ sealed class TwinState
         lock (gate) { messages.Clear(); keys.Clear(); }
     }
 
-    public FaultRule AddFault(string? to, string action, int? status, int? delayMs, int times)
+    public FaultRule AddFault(string? to, string? bodyContains, string action, int? status, int? delayMs, int times)
     {
         lock (gate)
         {
-            var rule = new FaultRule($"fault_{Guid.NewGuid():N}", to, action, status, delayMs, times);
+            var rule = new FaultRule($"fault_{Guid.NewGuid():N}", to, bodyContains, action, status, delayMs, times);
             faults.Add(rule);
             return rule;
         }
     }
 
-    // The first rule (in creation order) that matches this number; one use of its 'times'.
-    public FaultRule? TakeFault(string to)
+    // The first rule (in creation order) that matches this number and, when it has one, this body text
+    // (ordinal, case-sensitive); one use of its 'times'.
+    public FaultRule? TakeFault(string to, string body)
     {
         lock (gate)
         {
-            var i = faults.FindIndex(f => f.To is null || f.To == to);
+            var i = faults.FindIndex(f => (f.To is null || f.To == to)
+                && (f.BodyContains is null || body.Contains(f.BodyContains, StringComparison.Ordinal)));
             if (i < 0) return null;
             var rule = faults[i];
             if (rule.Times <= 1) faults.RemoveAt(i); else faults[i] = rule with { Times = rule.Times - 1 };
