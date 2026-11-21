@@ -1,11 +1,14 @@
 # SMS twin
 
-A behavioural clone of an SMS provider, for products' tests and previews. A product sends SMS to it as it would to a real provider. Tests read what arrived, and they can make sends fail on purpose. Everything is kept in memory.
+A behavioural clone of an SMS provider, for products' tests and previews. A product sends SMS to it as it would to a real provider. Tests read what arrived, and they can make sends fail on purpose. Tests can also simulate an incoming SMS (a reply), which the twin delivers to the product's webhook, signed. Everything is kept in memory.
 
 - **Image:** `ghcr.io/filipedominguesgit/sms-twin:<version>`, public. Pin a version; there is no `latest`.
 - **Port:** 8080 in the container.
-- **Version:** 0.1.0, which is also returned by `GET /health`.
-- **Configuration:** `TWIN_API_KEY`. When it is set, the send API needs `Authorization: Bearer <key>`. When it is unset or empty, the send API is open.
+- **Version:** 0.2.0, which is also returned by `GET /health`. 0.2.0 adds incoming messages; everything in 0.1.0 is unchanged.
+- **Configuration:**
+  - `TWIN_API_KEY`. When it is set, the send API needs `Authorization: Bearer <key>`. When it is unset or empty, the send API is open.
+  - `TWIN_WEBHOOK_URL`: where incoming messages are delivered, an absolute `http` or `https` URL. Optional; an invalid value stops the twin at startup.
+  - `TWIN_WEBHOOK_SECRET`: the key that signs deliveries. Optional; without it, deliveries are not signed.
 
 It is product-agnostic. The concrete failure cases a product must survive belong in its hidden scenarios, not here.
 
@@ -54,7 +57,11 @@ Fault rules (below) are applied before the idempotency check.
 | `POST /twin/faults` | 201 with the rule; adds a fault rule |
 | `GET /twin/faults` | 200, the rules still in use, with the `times` they have left |
 | `DELETE /twin/faults` | 204; clears the rules |
-| `GET /health` | 200, `{ "status": "ok", "version": "0.1.0" }` |
+| `POST /twin/inbound` | 201; simulates an incoming SMS and delivers it (below) |
+| `POST /twin/inbound/{id}/redeliver` | 200; delivers it again. 404 for an unknown id |
+| `GET /twin/inbound` | 200, every incoming message, in order, with its delivery attempts |
+| `DELETE /twin/inbound` | 204; clears the incoming messages |
+| `GET /health` | 200, `{ "status": "ok", "version": "0.2.0" }` |
 
 A message:
 
@@ -90,10 +97,42 @@ A rule that does not follow this table gets **400**.
 - `delay`: waits `delayMs`, then handles the request normally.
 - `accept-then-error`: stores the message, as on success, then answers `status`. A retry with the same `Idempotency-Key` then gets the original 202, and nothing is duplicated.
 
+## Incoming messages (0.2.0)
+
+`POST /twin/inbound`
+
+```json
+{ "from": "+351910000001", "to": "ExampleCo", "body": "YES" }
+```
+
+Validation, **400** with `{ "error": "..." }`: `from` is not `+` followed by 8 to 15 digits; `to` is missing or empty; `body` is not a string, or is longer than 1600 characters. An empty `body` is allowed.
+
+The twin gives the message an id (`in_…`) and a `receivedAt`, stores it, delivers it, and only then answers **201** with the message:
+
+```json
+{ "id": "in_…", "from": "+351910000001", "to": "ExampleCo", "body": "YES",
+  "receivedAt": "2026-11-21T18:00:00.123+00:00",
+  "attempts": [ { "at": "2026-11-21T18:00:00.140+00:00", "status": 204, "error": null } ] }
+```
+
+**Delivery:** one `POST <TWIN_WEBHOOK_URL>` with `Content-Type: application/json` and this body:
+
+```json
+{ "id": "in_…", "from": "+351910000001", "to": "ExampleCo", "body": "YES", "receivedAt": "2026-11-21T18:00:00.123+00:00" }
+```
+
+- When `TWIN_WEBHOOK_SECRET` is set, the request has `X-Sms-Signature: sha256=<hex>`: the lowercase hex HMAC-SHA256 of the exact body bytes sent, keyed by the UTF-8 bytes of the secret. There is no timestamp in the signature; a receiver can use `id` to spot repeats.
+- Timeout 10 seconds. There is no automatic retry, whatever the answer.
+- An attempt records the webhook's HTTP status, or `status: null` with an `error`: `timeout`, `connection`, or `not-configured` when `TWIN_WEBHOOK_URL` is unset.
+- `POST /twin/inbound/{id}/redeliver` sends the same body bytes and signature again, and adds an attempt. Use it to test duplicate delivery.
+- `receivedAt` and `at` are the twin's own real clock.
+
+Fault rules apply only to the send API, never to incoming messages.
+
 ## Running it
 
 ```
-docker run --rm -p 8090:8080 -e TWIN_API_KEY=dev-sms-key ghcr.io/filipedominguesgit/sms-twin:0.1.0
+docker run --rm -p 8090:8080 -e TWIN_API_KEY=dev-sms-key ghcr.io/filipedominguesgit/sms-twin:0.2.0
 ```
 
 Without Docker, with the .NET 10 SDK, from this folder:
@@ -107,10 +146,12 @@ dotnet run app.cs --urls http://localhost:8090
 `selftest.cs` checks this contract against a running twin. It resets the twin's state as it goes.
 
 ```
-dotnet run selftest.cs -- http://localhost:8090 <api key>
+dotnet run selftest.cs -- http://localhost:8090 <api key> [<webhook secret> <listen prefix>]
 ```
 
 The twin must run with the same `TWIN_API_KEY`.
+- With the webhook arguments, the self-test listens on `<listen prefix>` (for example `http://localhost:8091/`). The twin must run with `TWIN_WEBHOOK_URL` pointing at its path `/hook` (`http://localhost:8091/hook`) and the same `TWIN_WEBHOOK_SECRET`. A twin in a container reaches a listener on the host through `host.docker.internal` (on Linux, with `--add-host host.docker.internal:host-gateway`), and the listener must accept every host (`http://*:8091/`).
+- Without them, the twin must run with no `TWIN_WEBHOOK_URL`, and the self-test checks `not-configured`.
 
 ## Releasing
 

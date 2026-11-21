@@ -4,14 +4,17 @@
 #:property Nullable=enable
 
 // SMS twin: a behavioural clone of an SMS provider, for tests and previews.
-// Send API like a provider's, an inspection API and a fault API. State lives in memory.
+// Send API like a provider's, an inspection API, a fault API, and incoming messages delivered
+// to a signed webhook. State lives in memory.
 // Contract: README.md. Product-agnostic: it knows nothing about any product.
 
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-const string TwinVersion = "0.1.0";
+const string TwinVersion = "0.2.0";
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
@@ -19,6 +22,7 @@ var app = builder.Build();
 
 var apiKey = Environment.GetEnvironmentVariable("TWIN_API_KEY") is { Length: > 0 } k ? k : null;
 var state = new TwinState();
+var webhook = Webhook.FromEnvironment();
 
 app.MapGet("/health", () => Results.Json(new { status = "ok", version = TwinVersion }));
 
@@ -80,6 +84,33 @@ app.MapPost("/twin/faults", async (HttpRequest request) =>
 app.MapGet("/twin/faults", () => Results.Json(state.Faults()));
 app.MapDelete("/twin/faults", () => { state.ClearFaults(); return Results.NoContent(); });
 
+// ---------- incoming messages ----------
+
+app.MapPost("/twin/inbound", async (HttpRequest request) =>
+{
+    var (payload, problem) = await ReadObject(request);
+    if (payload is null) return Error(400, problem!);
+    var from = Str(payload, "from");
+    var to = Str(payload, "to");
+    var body = Str(payload, "body");
+    if (from is null || !Sms.IsNumber(from)) return Error(400, "'from' must be '+' followed by 8 to 15 digits");
+    if (string.IsNullOrEmpty(to)) return Error(400, "'to' must be a non-empty string");
+    if (body is null) return Error(400, "'body' must be a string");
+    if (body.Length > Sms.MaxBodyLength) return Error(400, $"'body' is longer than {Sms.MaxBodyLength} characters");
+
+    var inbound = state.AddInbound(from, to, body);
+    await webhook.Deliver(inbound);
+    return Results.Json(inbound.View(), statusCode: 201);
+});
+app.MapPost("/twin/inbound/{id}/redeliver", async (string id) =>
+{
+    if (state.FindInbound(id) is not { } inbound) return Error(404, "unknown incoming message");
+    await webhook.Deliver(inbound);
+    return Results.Json(inbound.View());
+});
+app.MapGet("/twin/inbound", () => Results.Json(state.InboundViews()));
+app.MapDelete("/twin/inbound", () => { state.ClearInbound(); return Results.NoContent(); });
+
 app.Run();
 
 // ---------- helpers ----------
@@ -111,6 +142,77 @@ record Message(string Id, string To, string From, string Body, string Encoding, 
 
 record SendResponse(string Id, string Status, string Encoding, int Segments);
 
+record Attempt(DateTimeOffset At, int? Status, string? Error);
+
+record InboundView(string Id, string From, string To, string Body, DateTimeOffset ReceivedAt, List<Attempt> Attempts);
+
+// An incoming message. Payload holds the exact bytes delivered, so a redelivery sends the same bytes.
+sealed class Inbound(string id, string from, string to, string body, DateTimeOffset receivedAt)
+{
+    private readonly List<Attempt> attempts = [];
+    public string Id { get; } = id;
+    public byte[] Payload { get; } = JsonSerializer.SerializeToUtf8Bytes(
+        new { id, from, to, body, receivedAt }, JsonSerializerOptions.Web);
+
+    public void Record(Attempt attempt)
+    {
+        lock (attempts) attempts.Add(attempt);
+    }
+
+    public InboundView View()
+    {
+        lock (attempts) return new InboundView(Id, from, to, body, receivedAt, [.. attempts]);
+    }
+}
+
+// Delivers incoming messages to TWIN_WEBHOOK_URL, signed with TWIN_WEBHOOK_SECRET when it is set.
+// One attempt per delivery, 10-second timeout, no automatic retry.
+sealed class Webhook(Uri? url, byte[]? secret)
+{
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
+
+    public static Webhook FromEnvironment()
+    {
+        var raw = Environment.GetEnvironmentVariable("TWIN_WEBHOOK_URL");
+        Uri? url = null;
+        if (!string.IsNullOrEmpty(raw)
+            && (!Uri.TryCreate(raw, UriKind.Absolute, out url) || url.Scheme is not ("http" or "https")))
+            throw new InvalidOperationException("TWIN_WEBHOOK_URL must be an absolute http or https URL");
+        var secret = Environment.GetEnvironmentVariable("TWIN_WEBHOOK_SECRET") is { Length: > 0 } s ? Encoding.UTF8.GetBytes(s) : null;
+        return new Webhook(url, secret);
+    }
+
+    public static string Signature(byte[] secret, byte[] payload) =>
+        "sha256=" + Convert.ToHexStringLower(HMACSHA256.HashData(secret, payload));
+
+    public async Task Deliver(Inbound inbound)
+    {
+        if (url is null)
+        {
+            inbound.Record(new Attempt(DateTimeOffset.UtcNow, null, "not-configured"));
+            return;
+        }
+        var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(inbound.Payload) };
+        request.Content.Headers.ContentType = new("application/json");
+        if (secret is not null) request.Headers.TryAddWithoutValidation("X-Sms-Signature", Signature(secret, inbound.Payload));
+        Attempt attempt;
+        try
+        {
+            using var response = await Http.SendAsync(request);
+            attempt = new Attempt(DateTimeOffset.UtcNow, (int)response.StatusCode, null);
+        }
+        catch (TaskCanceledException)
+        {
+            attempt = new Attempt(DateTimeOffset.UtcNow, null, "timeout");
+        }
+        catch (HttpRequestException)
+        {
+            attempt = new Attempt(DateTimeOffset.UtcNow, null, "connection");
+        }
+        inbound.Record(attempt);
+    }
+}
+
 record FaultRule(string Id, string? To, string Action, int? Status, int? DelayMs, int Times);
 
 sealed class TwinState
@@ -119,6 +221,29 @@ sealed class TwinState
     private readonly List<Message> messages = [];
     private readonly Dictionary<string, (SendRequest Request, SendResponse Response)> keys = [];
     private readonly List<FaultRule> faults = [];
+    private readonly List<Inbound> inbound = [];
+
+    public Inbound AddInbound(string from, string to, string body)
+    {
+        var message = new Inbound($"in_{Guid.NewGuid():N}", from, to, body, DateTimeOffset.UtcNow);
+        lock (gate) inbound.Add(message);
+        return message;
+    }
+
+    public Inbound? FindInbound(string id)
+    {
+        lock (gate) return inbound.FirstOrDefault(m => m.Id == id);
+    }
+
+    public List<InboundView> InboundViews()
+    {
+        lock (gate) return inbound.Select(m => m.View()).ToList();
+    }
+
+    public void ClearInbound()
+    {
+        lock (gate) inbound.Clear();
+    }
 
     // Stores the message, or replays the first response for a repeated Idempotency-Key.
     public (int Status, SendResponse? Response) Accept(SendRequest send)

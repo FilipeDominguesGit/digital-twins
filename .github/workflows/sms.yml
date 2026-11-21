@@ -17,6 +17,7 @@ permissions:
 env:
   IMAGE: ghcr.io/filipedominguesgit/sms-twin
   API_KEY: ci-key   # synthetic, for the self-test only
+  WEBHOOK_SECRET: ci-webhook-secret   # synthetic, for the self-test only
 
 jobs:
   build-test-publish:
@@ -37,18 +38,28 @@ jobs:
           SOURCE: https://github.com/${{ github.repository }}
         run: docker build --label "org.opencontainers.image.source=$SOURCE" -t sms-twin:ci sms
 
-      - name: Start the twin
+      - name: Start the twins
+        # sms-twin delivers incoming messages to the self-test's listener on the host;
+        # sms-twin-plain has no webhook.
         run: |
-          docker run -d --name sms-twin -e TWIN_API_KEY="$API_KEY" -p 8090:8080 sms-twin:ci
-          for i in $(seq 1 30); do
-            curl -fsS http://localhost:8090/health && exit 0
-            sleep 1
+          docker run -d --name sms-twin --add-host host.docker.internal:host-gateway \
+            -e TWIN_API_KEY="$API_KEY" -e TWIN_WEBHOOK_URL=http://host.docker.internal:8091/hook \
+            -e TWIN_WEBHOOK_SECRET="$WEBHOOK_SECRET" -p 8090:8080 sms-twin:ci
+          docker run -d --name sms-twin-plain -e TWIN_API_KEY="$API_KEY" -p 8093:8080 sms-twin:ci
+          for port in 8090 8093; do
+            for i in $(seq 1 30); do
+              curl -fsS "http://localhost:$port/health" && continue 2
+              sleep 1
+            done
+            docker logs sms-twin; docker logs sms-twin-plain
+            exit 1
           done
-          docker logs sms-twin
-          exit 1
 
-      - name: Self-test
-        run: dotnet run sms/selftest.cs -- http://localhost:8090 "$API_KEY"
+      - name: Self-test with a webhook
+        run: dotnet run sms/selftest.cs -- http://localhost:8090 "$API_KEY" "$WEBHOOK_SECRET" "http://*:8091/"
+
+      - name: Self-test without a webhook
+        run: dotnet run sms/selftest.cs -- http://localhost:8093 "$API_KEY"
 
       - name: Publish (tags only)
         if: startsWith(github.ref, 'refs/tags/sms-v')
@@ -74,4 +85,4 @@ jobs:
 
       - name: Stop the twin
         if: always()
-        run: docker rm -f sms-twin || true
+        run: docker rm -f sms-twin sms-twin-plain || true

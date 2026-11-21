@@ -4,7 +4,7 @@ Behavioural clones of external services, for tests and preview environments. A p
 
 | Twin | Image | What it does |
 |---|---|---|
-| [`sms`](sms/README.md) | `ghcr.io/filipedominguesgit/sms-twin` | An SMS provider: a send API with idempotency keys and GSM-7/UCS-2 segments, an inspection API, and fault injection (`error`, `delay`, `accept-then-error`) |
+| [`sms`](sms/README.md) | `ghcr.io/filipedominguesgit/sms-twin` | An SMS provider: a send API with idempotency keys and GSM-7/UCS-2 segments, an inspection API, fault injection (`error`, `delay`, `accept-then-error`), and incoming SMS delivered to a signed webhook |
 
 Each twin has its own folder with:
 - `app.cs`: a .NET 10 single-file app;
