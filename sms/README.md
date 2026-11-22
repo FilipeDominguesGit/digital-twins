@@ -137,31 +137,39 @@ Fault rules apply only to the send API, never to incoming messages.
 ## Running it
 
 ```
-docker run --rm -p 8090:8080 -e TWIN_API_KEY=dev-sms-key ghcr.io/filipedominguesgit/sms-twin:0.3.0
+docker run --rm -p 8090:8080 -e TWIN_API_KEY=dev-sms-key ghcr.io/filipedominguesgit/sms-twin:<version>
 ```
 
-Without Docker, with the .NET 10 SDK, from this folder:
+Without Docker, with the .NET SDK that `global.json` pins, from the repo root:
 
 ```
-dotnet run app.cs --urls http://localhost:8090
+dotnet run --project sms/app -- --urls http://localhost:8090
 ```
+
+To build the image locally, also from the repo root: `docker build -f sms/Dockerfile -t sms-twin .`
 
 ## Self-test
 
-`selftest.cs` checks this contract against a running twin. It resets the twin's state as it goes.
+The project `selftest/` checks this contract against a running twin. It runs named check groups; each one resets the twin's state first, and a failure names its group.
 
 ```
-dotnet run selftest.cs -- http://localhost:8090 <api key> [<webhook secret> <listen prefix>]
+dotnet run --project sms/selftest -- http://localhost:8090 <api key> [<webhook secret> <listen prefix>]
 ```
 
 The twin must run with the same `TWIN_API_KEY`.
 - With the webhook arguments, the self-test listens on `<listen prefix>` (for example `http://localhost:8091/`). The twin must run with `TWIN_WEBHOOK_URL` pointing at its path `/hook` (`http://localhost:8091/hook`) and the same `TWIN_WEBHOOK_SECRET`. A twin in a container reaches a listener on the host through `host.docker.internal` (on Linux, with `--add-host host.docker.internal:host-gateway`), and the listener must accept every host (`http://*:8091/`).
 - Without them, the twin must run with no `TWIN_WEBHOOK_URL`, and the self-test checks `not-configured`.
 
+## Code
+
+- `app/`: the twin, `SmsTwin.csproj`, with a folder per area: `Messages/` (the send API and the stored messages), `Faults/`, `Inbound/` (incoming messages and the webhook), `Sms/` (numbers and GSM encoding), `Http/` (strict JSON reading, errors, the API key filter) and `Health/`.
+- `selftest/`: the self-test, with a typed client (`Client/`), the webhook listener (`Webhook/`) and the check groups (`Groups/`).
+- The build rules are shared by every twin, at the repo root: one top-level type per file, named after it, and braces required, all as build errors; warnings are errors; the SDK is pinned in `global.json`. CI also runs `dotnet format DigitalTwins.slnx --verify-no-changes`.
+
 ## Releasing
 
-The workflow `.github/workflows/sms.yml` builds the image and runs the self-test on every change. To publish:
-1. Bump `TwinVersion` in `app.cs` and the version in this README.
+The workflow `.github/workflows/sms.yml` checks the build rules, builds the image and runs the self-test on every change. To publish:
+1. Bump `Version` in `app/SmsTwin.csproj` and the version in this README.
 2. Push the tag `sms-v<version>`.
 
-The workflow refuses a tag that differs from the twin's version, and it never overwrites a published version. Versions up to 0.1.0 were published from an earlier repository under the tag `sms-twin-v<version>`.
+The workflow refuses a tag that differs from the project's version, or an image that reports another version, and it never overwrites a published version. Versions up to 0.1.0 were published from an earlier repository under the tag `sms-twin-v<version>`.

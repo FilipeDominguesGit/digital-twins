@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/sms/">
+    <Project Path="sms/app/SmsTwin.csproj" />
+    <Project Path="sms/selftest/SmsTwin.SelfTest.csproj" />
+  </Folder>
+</Solution>
