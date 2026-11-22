@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using SmsTwin.Http;
+using SmsTwin.Sms;
 
 namespace SmsTwin.Faults;
 
@@ -28,6 +29,11 @@ internal static class FaultEndpoints
         if (payload.Action is not { } action)
         {
             return ApiError.BadRequest(FaultRuleRequest.ActionProblem);
+        }
+
+        if (payload.To is { } to && !PhoneNumber.IsValid(to))
+        {
+            return ApiError.BadRequest(FaultRuleRequest.ToProblem);
         }
 
         if (payload.BodyContains is { Length: 0 })

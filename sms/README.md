@@ -4,7 +4,8 @@ A behavioural clone of an SMS provider, for products' tests and previews. A prod
 
 - **Image:** `ghcr.io/filipedominguesgit/sms-twin:<version>`, public. Pin a version; there is no `latest`.
 - **Port:** 8080 in the container.
-- **Version:** 0.3.0, which is also returned by `GET /health`. History; each version keeps everything in the one before it:
+- **Version:** 0.4.0, which is also returned by `GET /health`. History; each version keeps everything in the one before it, except where it says otherwise:
+  - 0.4.0 checks numbers strictly: a number with anything after its digits, such as a trailing newline, is refused, and a fault rule's `to` must be a number. Both were accepted before.
   - 0.3.0 adds the optional `bodyContains` filter to fault rules.
   - 0.2.0 adds incoming messages.
   - 0.1.0: the send, test and fault APIs.
@@ -30,7 +31,7 @@ It is product-agnostic. The concrete failure cases a product must survive belong
 
 Validation, **400** with `{ "error": "..." }`:
 - the body is not a JSON object;
-- `to` is not `+` followed by 8 to 15 digits;
+- `to` is not `+` followed by 8 to 15 digits, with nothing before or after (not even a newline);
 - `from` is missing or empty;
 - `body` is missing or empty, or longer than 1600 characters (UTF-16 code units).
 
@@ -64,7 +65,7 @@ Fault rules (below) are applied before the idempotency check.
 | `POST /twin/inbound/{id}/redeliver` | 200; delivers it again. 404 for an unknown id |
 | `GET /twin/inbound` | 200, every incoming message, in order, with its delivery attempts |
 | `DELETE /twin/inbound` | 204; clears the incoming messages |
-| `GET /health` | 200, `{ "status": "ok", "version": "0.3.0" }` |
+| `GET /health` | 200, `{ "status": "ok", "version": "0.4.0" }` |
 
 A message:
 
@@ -85,7 +86,7 @@ A message:
 |---|---|
 | `action` | `error`, `delay` or `accept-then-error` (required) |
 | `times` | how many send requests the rule applies to, at least 1 (required) |
-| `to` | only send requests to this number (optional; every number when absent) |
+| `to` | only send requests to this number, `+` followed by 8 to 15 digits as in the send API (optional; every number when absent; checked from 0.4.0) |
 | `bodyContains` | only send requests whose `body` contains this text, a non-empty string (optional, 0.3.0; every body when absent). Ordinal and case-sensitive |
 | `status` | 100 to 599 (optional; for `error` the default is 503, for `accept-then-error` 500) |
 | `delayMs` | 0 to 120000 (required for `delay`) |
@@ -110,7 +111,7 @@ A rule that does not follow this table gets **400**. The `201` answer and `GET /
 { "from": "+351910000001", "to": "ExampleCo", "body": "YES" }
 ```
 
-Validation, **400** with `{ "error": "..." }`: `from` is not `+` followed by 8 to 15 digits; `to` is missing or empty; `body` is not a string, or is longer than 1600 characters. An empty `body` is allowed.
+Validation, **400** with `{ "error": "..." }`: `from` is not `+` followed by 8 to 15 digits, with nothing before or after; `to` is missing or empty; `body` is not a string, or is longer than 1600 characters. An empty `body` is allowed.
 
 The twin gives the message an id (`in_…`) and a `receivedAt`, stores it, delivers it, and only then answers **201** with the message:
 

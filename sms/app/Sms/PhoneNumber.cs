@@ -4,9 +4,9 @@ namespace SmsTwin.Sms;
 
 internal static partial class PhoneNumber
 {
-    /// <summary>True for <c>+</c> followed by 8 to 15 digits.</summary>
+    /// <summary>True for <c>+</c> followed by 8 to 15 digits, and nothing else (no trailing newline).</summary>
     public static bool IsValid(string number) => Pattern().IsMatch(number);
 
-    [GeneratedRegex(@"^\+[0-9]{8,15}$")]
+    [GeneratedRegex(@"^\+[0-9]{8,15}\z")]
     private static partial Regex Pattern();
 }

@@ -6,7 +6,8 @@ namespace SmsTwin.SelfTest.Groups;
 
 /// <summary>
 /// Locks what the fault API refuses and accepts beyond the README's table (D-028): numbers are never
-/// read from strings or fractions, <c>action</c> is exact, keys are case-sensitive, unknown keys are ignored.
+/// read from strings or fractions, <c>action</c> is exact, <c>to</c> is a number (0.4.0), keys are case-sensitive,
+/// unknown keys are ignored.
 /// </summary>
 internal sealed class FaultStrictInputChecks : CheckGroup
 {
@@ -43,6 +44,11 @@ internal sealed class FaultStrictInputChecks : CheckGroup
         ("key 'Times' with a capital", """{"action":"error","Times":1}"""),
         ("'to' as a number", """{"action":"error","times":1,"to":351910000001}"""),
         ("'to' as true", """{"action":"error","times":1,"to":true}"""),
+        ("'to' that is not a number (0.4.0)", """{"action":"error","times":1,"to":"not-a-number"}"""),
+        ("'to' empty (0.4.0)", """{"action":"error","times":1,"to":""}"""),
+        ("'to' without '+' (0.4.0)", """{"action":"error","times":1,"to":"351910000001"}"""),
+        ("'to' of 7 digits (0.4.0)", """{"action":"error","times":1,"to":"+1234567"}"""),
+        ("'to' with a trailing newline (0.4.0)", """{"action":"error","times":1,"to":"+351910000001\n"}"""),
         ("'bodyContains' as an object", """{"action":"error","times":1,"bodyContains":{}}"""),
         ("a duplicate key", """{"action":"error","times":1,"times":2}"""),
         ("invalid JSON", "{not json"),
@@ -61,7 +67,8 @@ internal sealed class FaultStrictInputChecks : CheckGroup
         ("'times' the largest 32-bit integer", """{"action":"error","times":2147483647}"""),
         ("every optional field null", """{"action":"error","times":1,"to":null,"bodyContains":null,"status":null,"delayMs":null}"""),
         ("an unknown key, ignored", """{"action":"error","times":1,"extra":{"a":1}}"""),
-        ("'to' that is not a number", """{"action":"error","times":1,"to":"not-a-number"}"""),
+        ("'to' of 8 digits", """{"action":"error","times":1,"to":"+12345678"}"""),
+        ("'to' of 15 digits", """{"action":"error","times":1,"to":"+123456789012345"}"""),
         ("'bodyContains' of one space", """{"action":"error","times":1,"bodyContains":" "}"""),
         ("'status' with delay, unused", """{"action":"delay","times":1,"delayMs":0,"status":418}"""),
         ("a UTF-8 byte order mark", "﻿{\"action\":\"error\",\"times\":1}"),

@@ -15,6 +15,8 @@ internal sealed class SendValidationChecks : CheckGroup
             c.Check($"400 for to '{to}'", (await c.Twin.Send(Message("hi", to))).Status == BadRequest);
         }
 
+        c.Check("400 for to with a trailing newline (0.4.0)", (await c.Twin.Send(Message("hi", A + "\n"))).Status == BadRequest);
+        c.Check("400 for to with a trailing CR LF (0.4.0)", (await c.Twin.Send(Message("hi", A + "\r\n"))).Status == BadRequest);
         c.Check("400 for empty body", (await c.Twin.Send(Message(string.Empty))).Status == BadRequest);
         c.Check("400 for body over 1600", (await c.Twin.Send(Message(new string('a', 1601)))).Status == BadRequest);
         c.Check("400 for missing from", (await c.Twin.SendJson($$"""{"to":"{{A}}","body":"hi"}""")).Status == BadRequest);

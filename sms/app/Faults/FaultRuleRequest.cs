@@ -13,7 +13,7 @@ internal sealed record FaultRuleRequest(
 {
     public const int MaxDelayMs = 120_000;
     public const string ActionProblem = "'action' must be 'error', 'delay' or 'accept-then-error'";
-    public const string ToProblem = "'to' must be a string";
+    public const string ToProblem = "'to' must be '+' followed by 8 to 15 digits";
     public const string BodyContainsProblem = "'bodyContains' must be a non-empty string";
     public const string TimesProblem = "'times' must be a whole number of at least 1";
     public const string StatusProblem = "'status' must be a whole number from 100 to 599";
